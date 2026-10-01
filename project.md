@@ -1,9 +1,9 @@
 # ZED2i Plane Visualizer (AR Overlay)
 
 ## Overview
-This project is a ROS2 (Humble) node that overlays a dynamically computed 3D plane onto a live RGB camera feed from a **Stereolabs ZED2i** camera. It is designed for a rover to visualize the ground slope directly ahead of it in real-time. 
+This project is a ROS2 node that overlays a dynamically computed 3D plane onto a live RGB camera feed from a **Stereolabs ZED2i** camera. It is designed for a rover to visualize the ground slope directly ahead of it in real-time. 
 
-Instead of showing a raw 3D point cloud, it acts as an Augmented Reality (AR) Heads-Up Display (HUD) using OpenCV. It computes a plane from three specific, fixed coordinate locations ahead of the rover and draws a semi-transparent amber plane, the points themselves, and the normal vector data directly onto the live RGB image.
+Instead of showing a raw 3D point cloud, it acts as an Augmented Reality (AR) Heads-Up Display (HUD) using OpenCV. It computes a plane from the point cloud ahead of the rover and draws a semi-transparent colored plane, the sampled points, and the slope/normal vector data directly onto the live RGB image.
 
 ## ROS2 Architecture
 
@@ -29,21 +29,29 @@ The ZED wrapper can output point clouds in either the base camera link frame or 
 
 Before projection, all 3D points are converted to the standard Optical Frame so they can be multiplied by the Intrinsic K Matrix.
 
-### 3. Fixed Target Point Selection
-To prevent the plane from jumping around due to point cloud noise, the node looks for 3 fixed geometric locations forming an equilateral triangle in front of the rover. 
-- **P1**: 0.5m ahead, 0.0m lateral
-- **P2**: 1.0m ahead, -0.3m lateral
-- **P3**: 1.0m ahead, +0.3m lateral
+### 3. Grid Sampling & Depth Isolation
+To process the dense point cloud efficiently, the algorithm applies a Field of View (FOV) filter (e.g., 0.1m - 3.0m ahead, ±0.75m laterally). It then finds the dominant depth using a histogram and performs a grid sampling (e.g., 10x10 cells) over the region to ensure an even distribution of points and reduce computation.
 
-For each target, it calculates the 2D Euclidean distance (depth and lateral axes) of all point cloud points to the target. To ensure Z-height stability, it takes all points within a 5cm radius of the target and averages them.
+### 4. Robust Plane Fitting (RANSAC & SVD)
+Instead of relying purely on a fixed set of points, the node uses RANSAC (Random Sample Consensus) on the grid-sampled points to find the dominant planar surface robustly.
+- It calculates an inlier mask for the points that fit the plane.
+- An SVD (Singular Value Decomposition) is performed on the inliers to refine the plane normal and calculate a **planarity** score.
+- As a fallback (if RANSAC fails to find enough inliers), it falls back to sampling 3 fixed geometric target locations ahead of the rover.
 
-### 4. Plane Computation
-Using the three stable 3D points, the script computes the plane's normal vector using a cross product ($v_1 \times v_2$). The normal vector is normalized and forced to face the camera. The plane equation ($n \cdot x = d$) is derived and displayed.
+### 5. Slope Classification
+The normal vector of the fitted plane is used to calculate the ground's **pitch** (forward/backward tilt) and **camber** (left/right tilt). 
+Based on the steepness (angle from horizontal), the slope is classified into:
+- **FLAT** (<= 10 deg)
+- **GENTLE SLOPE** (<= 25 deg)
+- **STEEP SLOPE** (<= 45 deg)
+- **EXTREME SLOPE** (<= 75 deg)
+- **WALL / OBSTACLE** (> 75 deg)
 
-### 5. AR Projection & OpenCV Rendering
-Using the projection formula $u = f_x \frac{X}{Z} + c_x$ and $v = f_y \frac{Y}{Z} + c_y$, the 3D plane corners and the 3 sample points are projected onto the 2D image plane.
-- `cv2.fillPoly` and `cv2.addWeighted` are used to draw a semi-transparent amber plane on the ground.
-- A HUD (Heads-Up Display) is drawn in the top-left corner detailing the normal vector, plane equation, and coordinate exacts for P1, P2, and P3. 
+### 6. AR Projection & OpenCV Rendering
+Using the projection formula $u = f_x \frac{X}{Z} + c_x$ and $v = f_y \frac{Y}{Z} + c_y$, the 3D plane corners and the sampled points are projected onto the 2D image plane.
+- `cv2.fillPoly` and `cv2.addWeighted` are used to draw a semi-transparent colored plane on the ground. The color corresponds to the slope severity.
+- A HUD (Heads-Up Display) is drawn detailing the normal vector, plane equation, pitch, camber, and planarity.
+- A large text readout of the slope classification is displayed, and walls/obstacles trigger a flashing red border around the screen.
 
 ## Requirements
 - ROS2 Humble
